@@ -2,6 +2,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
+import io
 import cloudinary
 import cloudinary.uploader
 
@@ -14,7 +15,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Cloudinary 설정 (이미지 업로드용)
+# 필수 컬럼 정의
+REQUIRED_COLUMNS = [
+    "접수일시", "시설ID", "요청자", "고장유형", 
+    "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
+]
+
+# Cloudinary 설정
 if "cloudinary" in st.secrets:
     cloudinary.config(
         cloud_name=st.secrets["cloudinary"]["cloud_name"],
@@ -22,26 +29,45 @@ if "cloudinary" in st.secrets:
         api_secret=st.secrets["cloudinary"]["api_secret"]
     )
 
-# Google Sheets 연결 설정
+# Google Sheets 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 데이터 불러오기 함수 (캐시 없이 실시간 반영)
+# 데이터 불러오기 (KeyError 방지 자동 보정 포함)
 def load_data():
     try:
         df = conn.read(ttl=0)
         if df.empty:
-            df = pd.DataFrame(columns=[
-                "접수일시", "시설ID", "요청자", "고장유형", 
-                "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
-            ])
-        return df
+            return pd.DataFrame(columns=REQUIRED_COLUMNS)
+        
+        # 구글 시트에 누락된 필수 열이 있다면 자동으로 empty 값으로 추가
+        for col in REQUIRED_COLUMNS:
+            if col not in df.columns:
+                df[col] = ""
+                
+        return df[REQUIRED_COLUMNS]  # 열 순서 표준화
     except Exception:
-        return pd.DataFrame(columns=[
-            "접수일시", "시설ID", "요청자", "고장유형", 
-            "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
-        ])
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 관리자 비밀번호 인증 함수 (중복 ID 방지를 위해 key_prefix 추가)
+# 엑셀 파일 생성 함수 (다중 시트 구성)
+def create_excel_report(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # 시트 1: 전체 접수 내역
+        df.to_excel(writer, sheet_name='전체_접수내역', index=False)
+        
+        # 시트 2: 고장 유형별 통계
+        type_df = df["고장유형"].value_counts().reset_index()
+        type_df.columns = ["고장유형", "접수건수"]
+        type_df.to_excel(writer, sheet_name='고장유형별_통계', index=False)
+        
+        # 시트 3: 처리 상태별 통계
+        status_df = df["처리상태"].value_counts().reset_index()
+        status_df.columns = ["처리상태", "접수건수"]
+        status_df.to_excel(writer, sheet_name='처리상태별_통계', index=False)
+
+    return output.getvalue()
+
+# 관리자 인증
 def check_password(key_prefix="admin"):
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
@@ -74,7 +100,7 @@ tab1, tab2, tab3 = st.tabs([
 
 
 # =========================================================
-# TAB 1: 보수 요청 (접수) - 일반 사용자용
+# TAB 1: 보수 요청 (접수)
 # =========================================================
 with tab1:
     st.subheader("📍 시설물 고장/보수 요청")
@@ -129,7 +155,7 @@ with tab1:
 
 
 # =========================================================
-# TAB 2: 담당자 조치 관리 (수정 + 삭제) - 관리자 전용
+# TAB 2: 담당자 조치 관리
 # =========================================================
 with tab2:
     if check_password(key_prefix="tab2"):
@@ -142,11 +168,11 @@ with tab2:
             st.dataframe(df, use_container_width=True)
             st.markdown("---")
 
-            # 1. 조치 상태 및 내용 업데이트
+            # 1. 조치 업데이트
             st.subheader("✏️ 조치 상태 및 내용 업데이트")
             
             options = [
-                f"{idx}번 | [{row['접수일시']}] {row['시설ID']} ({row['고장유형']})" 
+                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} ({row.get('고장유형', '')})" 
                 for idx, row in df.iterrows()
             ]
             selected_option = st.selectbox("수정할 접수 건을 선택하세요:", options, key="edit_select")
@@ -154,19 +180,23 @@ with tab2:
             selected_idx = int(selected_option.split("번")[0])
             target_row = df.loc[selected_idx]
 
-            if target_row["사진URL"] != "없음" and pd.notna(target_row["사진URL"]):
+            if target_row.get("사진URL", "없음") != "없음" and pd.notna(target_row.get("사진URL")):
                 st.image(target_row["사진URL"], caption="첨부된 현장 사진", width=300)
 
             col_a, col_b = st.columns(2)
             with col_a:
+                curr_status = target_row.get("처리상태", "접수완료")
+                status_list = ["접수완료", "처리중", "완료", "보류"]
+                status_idx = status_list.index(curr_status) if curr_status in status_list else 0
+                
                 new_status = st.selectbox(
                     "처리 상태 변경", 
-                    ["접수완료", "처리중", "완료", "보류"],
-                    index=["접수완료", "처리중", "완료", "보류"].index(target_row["처리상태"]) if target_row["처리상태"] in ["접수완료", "처리중", "완료", "보류"] else 0,
+                    status_list,
+                    index=status_idx,
                     key="status_select"
                 )
             with col_b:
-                action_detail = st.text_area("조치 내용", value=str(target_row["조치내용"]) if pd.notna(target_row["조치내용"]) else "", key="action_text")
+                action_detail = st.text_area("조치 내용", value=str(target_row.get("조치내용", "")) if pd.notna(target_row.get("조치내용")) else "", key="action_text")
 
             if st.button("💾 조치 사항 저장하기", use_container_width=True, key="save_btn"):
                 df.loc[selected_idx, "처리상태"] = new_status
@@ -181,10 +211,10 @@ with tab2:
 
             # 2. 접수 내역 삭제
             st.subheader("🗑️ 접수 내역 삭제 (강제 삭제)")
-            st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다. 신중하게 선택해 주세요.")
+            st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다.")
 
             del_options = [
-                f"{idx}번 | [{row['접수일시']}] {row['시설ID']} - {str(row['고장내용'])[:15]}..." 
+                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} - {str(row.get('고장내용', ''))[:15]}..." 
                 for idx, row in df.iterrows()
             ]
             selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
@@ -198,7 +228,7 @@ with tab2:
 
 
 # =========================================================
-# TAB 3: 개선 결과 통계 - 관리자 전용
+# TAB 3: 개선 결과 통계 (엑셀 다운로드 기능 추가)
 # =========================================================
 with tab3:
     if check_password(key_prefix="tab3"):
@@ -208,6 +238,21 @@ with tab3:
         if df.empty:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
+            # --- 📥 엑셀 다운로드 버튼 영역 ---
+            excel_data = create_excel_report(df)
+            file_today = datetime.now().strftime("%Y%m%d_%H%M")
+            
+            st.download_button(
+                label="📥 전체 통계 및 접수 내역 엑셀 다운로드 (.xlsx)",
+                data=excel_data,
+                file_name=f"시설보수_통계보고서_{file_today}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+            
+            st.markdown("---")
+
+            # 주요 KPI 지표
             total_count = len(df)
             completed_count = len(df[df["처리상태"] == "완료"])
             in_progress_count = len(df[df["처리상태"] == "처리중"])
