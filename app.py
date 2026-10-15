@@ -211,7 +211,7 @@ with tab1:
 
 
 # =========================================================
-# TAB 2: 담당자 조치 관리
+# TAB 2: 담당자 조치 관리 (UI 및 깔끔한 표 포맷팅 적용)
 # =========================================================
 with tab2:
     if check_password(key_prefix="tab2"):
@@ -221,22 +221,34 @@ with tab2:
         if df.empty:
             st.info("현재 접수된 내역이 없습니다.")
         else:
-            st.dataframe(df, use_container_width=True)
+            # 깔끔한 표 디스플레이 (긴 URL 대신 '📷 사진 보기' 링크 및 행 번호 숨김)
+            st.dataframe(
+                df, 
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "사진URL": st.column_config.LinkColumn("사진 링크", display_text="📷 사진 보기")
+                }
+            )
             st.markdown("---")
 
             # 1. 조치 업데이트
             st.subheader("✏️ 조치 상태 및 내용 업데이트")
             
-            options = [
-                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} ({row.get('고장유형', '')})" 
+            edit_dict = {
+                idx: f"[{idx + 1}번] {row.get('시설ID', '')} | {row.get('고장유형', '')} ({row.get('접수일시', '')})"
                 for idx, row in df.iterrows()
-            ]
-            selected_option = st.selectbox("수정할 접수 건을 선택하세요:", options, key="edit_select")
+            }
             
-            selected_idx = int(selected_option.split("번")[0])
+            selected_edit_idx = st.selectbox(
+                "수정할 접수 건을 선택하세요:",
+                options=list(edit_dict.keys()),
+                format_func=lambda x: edit_dict[x],
+                key="edit_select"
+            )
             
-            if selected_idx in df.index:
-                target_row = df.loc[selected_idx]
+            if selected_edit_idx in df.index:
+                target_row = df.loc[selected_edit_idx]
 
                 if target_row.get("사진URL", "없음") not in ["없음", "업로드실패", ""] and pd.notna(target_row.get("사진URL")):
                     st.image(target_row["사진URL"], caption="첨부된 현장 사진", width=300)
@@ -257,9 +269,9 @@ with tab2:
                     action_detail = st.text_area("조치 내용", value=str(target_row.get("조치내용", "")) if pd.notna(target_row.get("조치내용")) else "", key="action_text")
 
                 if st.button("💾 조치 사항 저장하기", use_container_width=True, key="save_btn"):
-                    df.loc[selected_idx, "처리상태"] = new_status
-                    df.loc[selected_idx, "조치내용"] = action_detail
-                    df.loc[selected_idx, "조치일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    df.loc[selected_edit_idx, "처리상태"] = new_status
+                    df.loc[selected_edit_idx, "조치내용"] = action_detail
+                    df.loc[selected_edit_idx, "조치일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
                     conn.update(data=df)
                     st.success("조치 결과가 구글 시트에 업데이트되었습니다!")
@@ -271,18 +283,23 @@ with tab2:
             st.subheader("🗑️ 접수 내역 삭제 (강제 삭제)")
             st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다.")
 
-            del_options = [
-                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} - {str(row.get('고장내용', ''))[:15]}..." 
+            del_dict = {
+                idx: f"[{idx + 1}번] {row.get('시설ID', '')} - {str(row.get('고장내용', ''))[:20]}... ({row.get('접수일시', '')})"
                 for idx, row in df.iterrows()
-            ]
-            selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
-            del_idx = int(selected_del_option.split("번")[0])
+            }
+
+            selected_del_idx = st.selectbox(
+                "삭제할 접수 건 선택:", 
+                options=list(del_dict.keys()),
+                format_func=lambda x: del_dict[x],
+                key="del_select"
+            )
 
             if st.button("🔴 선택한 내역 삭제하기", use_container_width=True, key="del_btn"):
-                if del_idx in df.index:
-                    df_deleted = df.drop(index=del_idx).reset_index(drop=True)
+                if selected_del_idx in df.index:
+                    df_deleted = df.drop(index=selected_del_idx).reset_index(drop=True)
                     conn.update(data=df_deleted)
-                    st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
+                    st.success("✅ 선택한 접수 내역이 성공적으로 삭제되었습니다.")
                     st.rerun()
 
 
@@ -297,7 +314,7 @@ with tab3:
         if df.empty:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
-            # 1. 통계 지표(KPI) 및 차트 즉시 출력 (로딩 멈춤 방지)
+            # 1. 통계 지표(KPI) 및 차트 즉시 출력
             total_count = len(df)
             completed_count = len(df[df["처리상태"] == "완료"])
             in_progress_count = len(df[df["처리상태"] == "처리중"])
@@ -325,7 +342,7 @@ with tab3:
 
             st.markdown("---")
 
-            # 2. 📥 엑셀 다운로드 영역 (하단 배치 및 캐싱으로 즉시 작동)
+            # 2. 📥 엑셀 다운로드 영역
             st.write("##### 📥 보고서 다운로드")
             try:
                 excel_data = create_excel_report(df)
