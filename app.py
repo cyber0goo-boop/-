@@ -64,7 +64,8 @@ def load_data():
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (열 이름 '사진' 변경 및 실물 이미지 삽입)
+# 엑셀 보고서 생성 함수 (캐싱 적용으로 화면 멈춤 방지)
+@st.cache_data(ttl=60)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -88,9 +89,9 @@ def create_excel_report(df):
                 photo_url = str(row.get("사진", "")).strip()
                 cell = ws.cell(row=row_idx, column=photo_col_idx)
                 
-                if photo_url and photo_url != "없음" and photo_url.startswith("http"):
+                if photo_url and photo_url not in ["없음", "업로드실패", ""] and photo_url.startswith("http"):
                     try:
-                        res = requests.get(photo_url, timeout=5)
+                        res = requests.get(photo_url, timeout=2)
                         if res.status_code == 200:
                             img_bytes = io.BytesIO(res.content)
                             pil_img = PILImage.open(img_bytes)
@@ -264,4 +265,17 @@ with tab2:
                     st.success("조치 결과가 구글 시트에 업데이트되었습니다!")
                     st.rerun()
 
-            st.markdown
+            st.markdown("---")
+
+            # 2. 접수 내역 삭제
+            st.subheader("🗑️ 접수 내역 삭제 (강제 삭제)")
+            st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다.")
+
+            del_options = [
+                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} - {str(row.get('고장내용', ''))[:15]}..." 
+                for idx, row in df.iterrows()
+            ]
+            selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
+            del_idx = int(selected_del_option.split("번")[0])
+
+            if st.button("🔴 선택한 내역 삭제하기", use_container_width
