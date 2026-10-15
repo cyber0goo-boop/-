@@ -24,7 +24,7 @@ cloudinary.config(
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data():
-    """구글 시트 데이터 읽기 (캐시 0초 설정으로 실시간 반영)"""
+    """구글 시트 데이터 읽기 (실시간 반영)"""
     return conn.read(ttl=0)
 
 # ---------------------------------------------------------
@@ -35,7 +35,7 @@ st.title("🛠️ 시설보수 요청 및 통합 관리 시스템")
 tab1, tab2, tab3 = st.tabs(["📱 보수 요청 (접수)", "📋 담당자 조치 관리", "📊 개선 결과 통계"])
 
 # =========================================================
-# TAB 1: 모바일 QR 접수 페이지
+# TAB 1: 모바일 QR 접수 페이지 (누구나 접근 가능)
 # =========================================================
 with tab1:
     st.subheader("시설물 고장/보수 요청")
@@ -90,100 +90,121 @@ with tab1:
                     st.balloons()
 
 # =========================================================
-# TAB 2: 담당자 확인 및 조치 등록 페이지
+# TAB 2: 담당자 확인 및 조치 등록 페이지 (비밀번호 잠금)
 # =========================================================
 with tab2:
-    st.subheader("📋 접수 내역 확인 및 조치 완료 처리")
+    st.subheader("📋 담당자 조치 관리")
     
-    df = load_data()
+    # 관리자 비밀번호 확인
+    pwd2 = st.text_input("🔑 관리자 비밀번호를 입력하세요", type="password", key="pwd_tab2")
     
-    if df.empty or "처리상태" not in df.columns:
-        st.info("현재 접수된 내역이 없습니다.")
-    else:
-        # 필터링 옵션
-        status_filter = st.radio("상태 필터", ["전체", "접수중", "조치완료"], horizontal=True)
-        
-        filtered_df = df if status_filter == "전체" else df[df["처리상태"] == status_filter]
-        
-        st.dataframe(filtered_df[["ID", "접수일시", "시설ID", "카테고리", "고장내용", "처리상태", "조치일시"]], use_container_width=True)
-
+    if pwd2 == st.secrets.get("ADMIN_PASSWORD", ""):
+        st.success("🔓 관리자 인증이 완료되었습니다.")
         st.markdown("---")
-        st.subheader("🛠️ 조치 결과 입력")
-
-        # '접수중'인 건들의 ID 목록
-        pending_items = df[df["처리상태"] == "접수중"]
         
-        if pending_items.empty:
-            st.success("🎉 현재 미처리된 보수 요청이 없습니다!")
+        df = load_data()
+        
+        if df.empty or "처리상태" not in df.columns:
+            st.info("현재 접수된 내역이 없습니다.")
         else:
-            selected_id = st.selectbox("조치할 요청건 선택 (ID 기준)", pending_items["ID"].tolist())
+            # 필터링 옵션
+            status_filter = st.radio("상태 필터", ["전체", "접수중", "조치완료"], horizontal=True)
+            filtered_df = df if status_filter == "전체" else df[df["처리상태"] == status_filter]
             
-            # 선택한 건의 상세정보 표시
-            selected_row = df[df["ID"] == selected_id].iloc[0]
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**위치:** {selected_row['시설ID']}")
-                st.write(f"**요청자:** {selected_row['요청자']}")
-                st.write(f"**고장내용:** {selected_row['고장내용']}")
-            with col2:
-                if selected_row['사진URL']:
-                    st.image(selected_row['사진URL'], caption="접수 현장 사진", width=250)
+            st.dataframe(filtered_df[["ID", "접수일시", "시설ID", "카테고리", "고장내용", "처리상태", "조치일시"]], use_container_width=True)
 
-            with st.form("action_form"):
-                action_text = st.text_area("조치 내용 및 개선 결과 입력")
-                complete_btn = st.form_submit_button("✅ 조치 완료 처리")
+            st.markdown("---")
+            st.subheader("🛠️ 조치 결과 입력")
 
-                if complete_btn:
-                    if not action_text:
-                        st.error("조치 내용을 입력해 주세요.")
-                    else:
-                        # 데이터 수정
-                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        df.loc[df["ID"] == selected_id, "처리상태"] = "조치완료"
-                        df.loc[df["ID"] == selected_id, "조치일시"] = now_str
-                        df.loc[df["ID"] == selected_id, "조치내용"] = action_text
+            # '접수중'인 건들의 ID 목록
+            pending_items = df[df["처리상태"] == "접수중"]
+            
+            if pending_items.empty:
+                st.success("🎉 현재 미처리된 보수 요청이 없습니다!")
+            else:
+                selected_id = st.selectbox("조치할 요청건 선택 (ID 기준)", pending_items["ID"].tolist())
+                
+                # 선택한 건의 상세정보 표시
+                selected_row = df[df["ID"] == selected_id].iloc[0]
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write(f"**위치:** {selected_row['시설ID']}")
+                    st.write(f"**요청자:** {selected_row['요청자']}")
+                    st.write(f"**고장내용:** {selected_row['고장내용']}")
+                with col2:
+                    if selected_row['사진URL']:
+                        st.image(selected_row['사진URL'], caption="접수 현장 사진", width=250)
 
-                        conn.update(data=df)
-                        st.success(f"ID {selected_id} 건이 '조치완료' 처리되었습니다.")
-                        st.rerun()
+                with st.form("action_form"):
+                    action_text = st.text_area("조치 내용 및 개선 결과 입력")
+                    complete_btn = st.form_submit_button("✅ 조치 완료 처리")
+
+                    if complete_btn:
+                        if not action_text:
+                            st.error("조치 내용을 입력해 주세요.")
+                        else:
+                            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            df.loc[df["ID"] == selected_id, "처리상태"] = "조치완료"
+                            df.loc[df["ID"] == selected_id, "조치일시"] = now_str
+                            df.loc[df["ID"] == selected_id, "조치내용"] = action_text
+
+                            conn.update(data=df)
+                            st.success(f"ID {selected_id} 건이 '조치완료' 처리되었습니다.")
+                            st.rerun()
+
+    elif pwd2 != "":
+        st.error("❌ 비밀번호가 올바르지 않습니다.")
+    else:
+        st.info("💡 담당자 전용 기능입니다. 비밀번호를 입력해야 조치 등록이 가능합니다.")
 
 # =========================================================
-# TAB 3: 개선 결과 및 현황 통계 대시보드
+# TAB 3: 개선 결과 및 현황 통계 대시보드 (비밀번호 잠금)
 # =========================================================
 with tab3:
     st.subheader("📊 시설 보수 현황 통계")
     
-    df = load_data()
-
-    if not df.empty and "처리상태" in df.columns:
-        # 요약 지표 (KPI)
-        total_cnt = len(df)
-        pending_cnt = len(df[df["처리상태"] == "접수중"])
-        completed_cnt = len(df[df["처리상태"] == "조치완료"])
-        complete_rate = (completed_cnt / total_cnt * 100) if total_cnt > 0 else 0
-
-        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("총 접수 건수", f"{total_cnt} 건")
-        kpi2.metric("처리 대기", f"{pending_cnt} 건", delta_color="inverse")
-        kpi3.metric("조치 완료", f"{completed_cnt} 건")
-        kpi4.metric("조치 완료율", f"{complete_rate:.1f} %")
-
+    pwd3 = st.text_input("🔑 관리자 비밀번호를 입력하세요", type="password", key="pwd_tab3")
+    
+    if pwd3 == st.secrets.get("ADMIN_PASSWORD", ""):
+        st.success("🔓 관리자 인증이 완료되었습니다.")
         st.markdown("---")
+        
+        df = load_data()
 
-        col_chart1, col_chart2 = st.columns(2)
+        if not df.empty and "처리상태" in df.columns:
+            # 요약 지표 (KPI)
+            total_cnt = len(df)
+            pending_cnt = len(df[df["처리상태"] == "접수중"])
+            completed_cnt = len(df[df["처리상태"] == "조치완료"])
+            complete_rate = (completed_cnt / total_cnt * 100) if total_cnt > 0 else 0
 
-        with col_chart1:
-            st.markdown("##### 🏷️ 카테고리별 고장 발생 비율")
-            cat_counts = df["카테고리"].value_counts().reset_index()
-            cat_counts.columns = ["카테고리", "건수"]
-            fig_pie = px.pie(cat_counts, values="건수", names="카테고리", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+            kpi1.metric("총 접수 건수", f"{total_cnt} 건")
+            kpi2.metric("처리 대기", f"{pending_cnt} 건")
+            kpi3.metric("조치 완료", f"{completed_cnt} 건")
+            kpi4.metric("조치 완료율", f"{complete_rate:.1f} %")
 
-        with col_chart2:
-            st.markdown("##### 📍 시설/위치별 보수 요청 Top 5")
-            fac_counts = df["시설ID"].value_counts().head(5).reset_index()
-            fac_counts.columns = ["시설ID", "건수"]
-            fig_bar = px.bar(fac_counts, x="시설ID", y="건수", color="건수", color_continuous_scale="Reds")
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.markdown("---")
+
+            col_chart1, col_chart2 = st.columns(2)
+
+            with col_chart1:
+                st.markdown("##### 🏷️ 카테고리별 고장 발생 비율")
+                cat_counts = df["카테고리"].value_counts().reset_index()
+                cat_counts.columns = ["카테고리", "건수"]
+                fig_pie = px.pie(cat_counts, values="건수", names="카테고리", hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
+
+            with col_chart2:
+                st.markdown("##### 📍 시설/위치별 보수 요청 Top 5")
+                fac_counts = df["시설ID"].value_counts().head(5).reset_index()
+                fac_counts.columns = ["시설ID", "건수"]
+                fig_bar = px.bar(fac_counts, x="시설ID", y="건수", color="건수", color_continuous_scale="Reds")
+                st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("통계를 표시할 데이터가 부족합니다.")
+
+    elif pwd3 != "":
+        st.error("❌ 비밀번호가 올바르지 않습니다.")
     else:
-        st.info("통계를 표시할 데이터가 부족합니다.")
+        st.info("💡 담당자 전용 기능입니다. 비밀번호를 입력해야 통계 확인이 가능합니다.")
