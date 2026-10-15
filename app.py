@@ -3,6 +3,11 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 import io
+import requests
+from PIL import Image as PILImage
+import openpyxl
+from openpyxl.drawing.image import Image as OpenPyXLImage
+from openpyxl.utils import get_column_letter
 import cloudinary
 import cloudinary.uploader
 
@@ -48,19 +53,60 @@ def load_data():
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 파일 생성 함수 (다중 시트 구성)
+# 엑셀 파일 생성 함수 (사진 실물 삽입 기능 포함)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 시트 1: 전체 접수 내역
-        df.to_excel(writer, sheet_name='전체_접수내역', index=False)
+        # 1. 전체 접수내역 시트 생성
+        df_export = df.copy()
+        df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         
-        # 시트 2: 고장 유형별 통계
+        ws = writer.sheets['전체_접수내역']
+        
+        # '사진URL' 열 위치(1-based) 및 컬럼 문구 구하기
+        photo_col_idx = df_export.columns.get_loc("사진URL") + 1
+        photo_col_letter = get_column_letter(photo_col_idx)
+        
+        # 사진 열 너비 조정 (210픽셀 크기 대응: 약 30)
+        ws.column_dimensions[photo_col_letter].width = 30
+        
+        # 각 행 순회하며 사진 다운로드 및 셀 삽입
+        for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2): # 1행은 헤더
+            # 셀 높이 조정 (150픽셀 크기 대응: 약 115pt)
+            ws.row_dimensions[row_idx].height = 115
+            
+            photo_url = str(row.get("사진URL", "")).strip()
+            cell = ws.cell(row=row_idx, column=photo_col_idx)
+            
+            if photo_url and photo_url != "없음" and photo_url.startswith("http"):
+                try:
+                    # 사진 이미지 웹에서 다운로드
+                    res = requests.get(photo_url, timeout=5)
+                    if res.status_code == 200:
+                        img_bytes = io.BytesIO(res.content)
+                        pil_img = PILImage.open(img_bytes)
+                        
+                        # 엑셀용 이미지 객체 생성 및 크기 리사이징 (210px x 150px)
+                        excel_img = OpenPyXLImage(pil_img)
+                        excel_img.width = 210
+                        excel_img.height = 150
+                        
+                        # 해당 위치 셀에 사진 등록
+                        cell_location = f"{photo_col_letter}{row_idx}"
+                        ws.add_image(excel_img, cell_location)
+                        
+                        # 셀 안의 기존 URL 텍스트는 지워서 깔끔하게 유지
+                        cell.value = ""
+                except Exception:
+                    # 이미지 로드 실패 시 기존 URL 유지
+                    pass
+        
+        # 2. 고장 유형별 통계 시트
         type_df = df["고장유형"].value_counts().reset_index()
         type_df.columns = ["고장유형", "접수건수"]
         type_df.to_excel(writer, sheet_name='고장유형별_통계', index=False)
         
-        # 시트 3: 처리 상태별 통계
+        # 3. 처리 상태별 통계 시트
         status_df = df["처리상태"].value_counts().reset_index()
         status_df.columns = ["처리상태", "접수건수"]
         status_df.to_excel(writer, sheet_name='처리상태별_통계', index=False)
@@ -228,7 +274,7 @@ with tab2:
 
 
 # =========================================================
-# TAB 3: 개선 결과 통계 (엑셀 다운로드 기능 추가)
+# TAB 3: 개선 결과 통계 (엑셀 이미지 실물 삽입 기능)
 # =========================================================
 with tab3:
     if check_password(key_prefix="tab3"):
@@ -239,11 +285,13 @@ with tab3:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
             # --- 📥 엑셀 다운로드 버튼 영역 ---
-            excel_data = create_excel_report(df)
+            with st.spinner("엑셀 보고서 및 현장 사진을 생성 중입니다..."):
+                excel_data = create_excel_report(df)
+            
             file_today = datetime.now().strftime("%Y%m%d_%H%M")
             
             st.download_button(
-                label="📥 전체 통계 및 접수 내역 엑셀 다운로드 (.xlsx)",
+                label="📥 사진 포함 전체 엑셀 보고서 다운로드 (.xlsx)",
                 data=excel_data,
                 file_name=f"시설보수_통계보고서_{file_today}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
