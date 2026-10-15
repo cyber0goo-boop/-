@@ -278,4 +278,65 @@ with tab2:
             selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
             del_idx = int(selected_del_option.split("번")[0])
 
-            if st.button("🔴 선택한 내역 삭제하기", use_container_width
+            if st.button("🔴 선택한 내역 삭제하기", use_container_width=True, key="del_btn"):
+                if del_idx in df.index:
+                    df_deleted = df.drop(index=del_idx).reset_index(drop=True)
+                    conn.update(data=df_deleted)
+                    st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
+                    st.rerun()
+
+
+# =========================================================
+# TAB 3: 개선 결과 통계 (속도 최적화 및 로딩 순서 개선)
+# =========================================================
+with tab3:
+    if check_password(key_prefix="tab3"):
+        st.subheader("📊 시설보수 처리 현황 및 통계")
+        df = load_data()
+
+        if df.empty:
+            st.info("통계를 산출할 데이터가 없습니다.")
+        else:
+            # 1. 통계 지표(KPI) 및 차트 즉시 출력 (로딩 멈춤 방지)
+            total_count = len(df)
+            completed_count = len(df[df["처리상태"] == "완료"])
+            in_progress_count = len(df[df["처리상태"] == "처리중"])
+            pending_count = len(df[df["처리상태"] == "접수완료"])
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("총 접수 건수", f"{total_count}건")
+            c2.metric("처리 완료", f"{completed_count}건")
+            c3.metric("처리 중", f"{in_progress_count}건")
+            c4.metric("미처리 접수", f"{pending_count}건")
+
+            st.markdown("---")
+
+            col_chart1, col_chart2 = st.columns(2)
+            
+            with col_chart1:
+                st.write("##### 📌 처리 상태별 현황")
+                status_counts = df["처리상태"].value_counts()
+                st.bar_chart(status_counts)
+
+            with col_chart2:
+                st.write("##### 🏷️ 고장 유형별 접수 비중")
+                type_counts = df["고장유형"].value_counts()
+                st.bar_chart(type_counts)
+
+            st.markdown("---")
+
+            # 2. 📥 엑셀 다운로드 영역 (하단 배치 및 캐싱으로 즉시 작동)
+            st.write("##### 📥 보고서 다운로드")
+            try:
+                excel_data = create_excel_report(df)
+                file_today = datetime.now().strftime("%Y%m%d_%H%M")
+                
+                st.download_button(
+                    label="📥 사진 포함 전체 엑셀 보고서 다운로드 (.xlsx)",
+                    data=excel_data,
+                    file_name=f"시설보수_통계보고서_{file_today}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception:
+                st.warning("⚠️ 엑셀 생성 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
