@@ -29,7 +29,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def load_data():
     try:
         df = conn.read(ttl=0)
-        # 빈 데이터프레임일 경우 열 생성
         if df.empty:
             df = pd.DataFrame(columns=[
                 "접수일시", "시설ID", "요청자", "고장유형", 
@@ -37,21 +36,20 @@ def load_data():
             ])
         return df
     except Exception:
-        # 시트가 완전 비어있을 때의 기본 컬럼
         return pd.DataFrame(columns=[
             "접수일시", "시설ID", "요청자", "고장유형", 
             "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
         ])
 
-# 관리자 비밀번호 인증 함수
-def check_password():
+# 관리자 비밀번호 인증 함수 (중복 ID 방지를 위해 key_prefix 추가)
+def check_password(key_prefix="admin"):
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
 
     if not st.session_state["admin_logged_in"]:
         st.info("🔒 담당자 전용 기능입니다. 비밀번호를 입력해 주세요.")
-        pwd_input = st.text_input("🔑 관리자 비밀번호", type="password")
-        if st.button("인증하기"):
+        pwd_input = st.text_input("🔑 관리자 비밀번호", type="password", key=f"{key_prefix}_pwd")
+        if st.button("인증하기", key=f"{key_prefix}_btn"):
             admin_pwd = st.secrets.get("ADMIN_PASSWORD", "")
             if pwd_input == admin_pwd:
                 st.session_state["admin_logged_in"] = True
@@ -81,7 +79,6 @@ tab1, tab2, tab3 = st.tabs([
 with tab1:
     st.subheader("📍 시설물 고장/보수 요청")
 
-    # URL 파라미터에서 facility_id 읽어오기 (QR 코드 대응)
     query_params = st.query_params
     default_facility = query_params.get("facility_id", "미지정_직접입력")
 
@@ -104,14 +101,12 @@ with tab1:
         if not requester_info or not issue_detail:
             st.warning("⚠️ 요청자 정보와 고장 내용을 입력해 주세요.")
         else:
-            # 사진 Cloudinary 업로드
             photo_url = "없음"
             if uploaded_file is not None:
                 with st.spinner("사진을 업로드 중입니다..."):
                     upload_result = cloudinary.uploader.upload(uploaded_file)
                     photo_url = upload_result.get("secure_url", "없음")
 
-            # 저장할 데이터 행 작성
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             new_row = {
                 "접수일시": now_str,
@@ -125,7 +120,6 @@ with tab1:
                 "조치일시": ""
             }
 
-            # 구글 시트에 기존 데이터와 합쳐서 저장
             df = load_data()
             updated_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
             conn.update(data=updated_df)
@@ -135,34 +129,31 @@ with tab1:
 
 
 # =========================================================
-# TAB 2: 담당자 조치 관리 (수정 + 삭제 포함) - 관리자 전용
+# TAB 2: 담당자 조치 관리 (수정 + 삭제) - 관리자 전용
 # =========================================================
 with tab2:
-    if check_password():
+    if check_password(key_prefix="tab2"):
         st.subheader("📋 전체 접수 내역 및 조치 등록")
         df = load_data()
 
         if df.empty:
             st.info("현재 접수된 내역이 없습니다.")
         else:
-            # 1. 전체 데이터 테이블 표시
             st.dataframe(df, use_container_width=True)
             st.markdown("---")
 
-            # 2. 조치 상태 업데이트 구역
+            # 1. 조치 상태 및 내용 업데이트
             st.subheader("✏️ 조치 상태 및 내용 업데이트")
             
-            # 드롭다운에서 수정할 건 선택 (인덱스 + 접수일시 + 시설ID)
             options = [
                 f"{idx}번 | [{row['접수일시']}] {row['시설ID']} ({row['고장유형']})" 
                 for idx, row in df.iterrows()
             ]
-            selected_option = st.selectbox("수정할 접수 건을 선택하세요:", options)
+            selected_option = st.selectbox("수정할 접수 건을 선택하세요:", options, key="edit_select")
             
             selected_idx = int(selected_option.split("번")[0])
             target_row = df.loc[selected_idx]
 
-            # 기존 사진이 있는 경우 보여주기
             if target_row["사진URL"] != "없음" and pd.notna(target_row["사진URL"]):
                 st.image(target_row["사진URL"], caption="첨부된 현장 사진", width=300)
 
@@ -171,12 +162,13 @@ with tab2:
                 new_status = st.selectbox(
                     "처리 상태 변경", 
                     ["접수완료", "처리중", "완료", "보류"],
-                    index=["접수완료", "처리중", "완료", "보류"].index(target_row["처리상태"]) if target_row["처리상태"] in ["접수완료", "처리중", "완료", "보류"] else 0
+                    index=["접수완료", "처리중", "완료", "보류"].index(target_row["처리상태"]) if target_row["처리상태"] in ["접수완료", "처리중", "완료", "보류"] else 0,
+                    key="status_select"
                 )
             with col_b:
-                action_detail = st.text_area("조치 내용", value=str(target_row["조치내용"]) if pd.notna(target_row["조치내용"]) else "")
+                action_detail = st.text_area("조치 내용", value=str(target_row["조치내용"]) if pd.notna(target_row["조치내용"]) else "", key="action_text")
 
-            if st.button("💾 조치 사항 저장하기", use_container_width=True):
+            if st.button("💾 조치 사항 저장하기", use_container_width=True, key="save_btn"):
                 df.loc[selected_idx, "처리상태"] = new_status
                 df.loc[selected_idx, "조치내용"] = action_detail
                 df.loc[selected_idx, "조치일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -187,7 +179,7 @@ with tab2:
 
             st.markdown("---")
 
-            # 3. 🗑️ 접수 내역 삭제 구역 (신규 추가)
+            # 2. 접수 내역 삭제
             st.subheader("🗑️ 접수 내역 삭제 (강제 삭제)")
             st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다. 신중하게 선택해 주세요.")
 
@@ -198,11 +190,8 @@ with tab2:
             selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
             del_idx = int(selected_del_option.split("번")[0])
 
-            if st.button("🔴 선택한 내역 삭제하기", use_container_width=True):
-                # 해당 인덱스 행 삭제 후 인덱스 재정렬
+            if st.button("🔴 선택한 내역 삭제하기", use_container_width=True, key="del_btn"):
                 df_deleted = df.drop(index=del_idx).reset_index(drop=True)
-                
-                # 구글 시트에 업데이트 반영
                 conn.update(data=df_deleted)
                 st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
                 st.rerun()
@@ -212,14 +201,13 @@ with tab2:
 # TAB 3: 개선 결과 통계 - 관리자 전용
 # =========================================================
 with tab3:
-    if check_password():
+    if check_password(key_prefix="tab3"):
         st.subheader("📊 시설보수 처리 현황 및 통계")
         df = load_data()
 
         if df.empty:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
-            # 주요 KPI 지표
             total_count = len(df)
             completed_count = len(df[df["처리상태"] == "완료"])
             in_progress_count = len(df[df["처리상태"] == "처리중"])
@@ -233,7 +221,6 @@ with tab3:
 
             st.markdown("---")
 
-            # 차트 시각화
             col_chart1, col_chart2 = st.columns(2)
             
             with col_chart1:
