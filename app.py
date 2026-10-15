@@ -64,8 +64,7 @@ def load_data():
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (캐싱 적용으로 화면 멈춤 방지)
-@st.cache_data(ttl=60)
+# 엑셀 보고서 생성 함수 (안정성 강화 및 실시간 생성)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -84,6 +83,8 @@ def create_excel_report(df):
             photo_col_letter = get_column_letter(photo_col_idx)
             ws.column_dimensions[photo_col_letter].width = 30
             
+            headers = {"User-Agent": "Mozilla/5.0"}
+            
             for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2):
                 ws.row_dimensions[row_idx].height = 115
                 photo_url = str(row.get("사진", "")).strip()
@@ -91,7 +92,7 @@ def create_excel_report(df):
                 
                 if photo_url and photo_url not in ["없음", "업로드실패", ""] and photo_url.startswith("http"):
                     try:
-                        res = requests.get(photo_url, timeout=2)
+                        res = requests.get(photo_url, timeout=3, headers=headers)
                         if res.status_code == 200:
                             img_bytes = io.BytesIO(res.content)
                             pil_img = PILImage.open(img_bytes)
@@ -120,22 +121,27 @@ def create_excel_report(df):
 
     return output.getvalue()
 
-# 관리자 인증
+# 관리자 인증 (엔터키 제출 지원 Form 구조)
 def check_password(key_prefix="admin"):
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
 
     if not st.session_state["admin_logged_in"]:
         st.info("🔒 담당자 전용 기능입니다. 비밀번호를 입력해 주세요.")
-        pwd_input = st.text_input("🔑 관리자 비밀번호", type="password", key=f"{key_prefix}_pwd")
-        if st.button("인증하기", key=f"{key_prefix}_btn"):
-            admin_pwd = st.secrets.get("ADMIN_PASSWORD", "")
-            if pwd_input == admin_pwd:
-                st.session_state["admin_logged_in"] = True
-                st.success("🔓 관리자 인증이 완료되었습니다.")
-                st.rerun()
-            else:
-                st.error("❌ 비밀번호가 올바르지 않습니다.")
+        
+        # Form으로 감싸 엔터키 입력 시 즉시 제출 처리
+        with st.form(key=f"{key_prefix}_login_form"):
+            pwd_input = st.text_input("🔑 관리자 비밀번호", type="password", key=f"{key_prefix}_pwd")
+            submit_btn = st.form_submit_button("인증하기", use_container_width=True)
+            
+            if submit_btn:
+                admin_pwd = st.secrets.get("ADMIN_PASSWORD", "")
+                if pwd_input == admin_pwd:
+                    st.session_state["admin_logged_in"] = True
+                    st.success("🔓 관리자 인증이 완료되었습니다.")
+                    st.rerun()
+                else:
+                    st.error("❌ 비밀번호가 올바르지 않습니다.")
         return False
     return True
 
@@ -211,7 +217,7 @@ with tab1:
 
 
 # =========================================================
-# TAB 2: 담당자 조치 관리 (UI 및 깔끔한 표 포맷팅 적용)
+# TAB 2: 담당자 조치 관리
 # =========================================================
 with tab2:
     if check_password(key_prefix="tab2"):
@@ -221,7 +227,6 @@ with tab2:
         if df.empty:
             st.info("현재 접수된 내역이 없습니다.")
         else:
-            # 깔끔한 표 디스플레이 (긴 URL 대신 '📷 사진 보기' 링크 및 행 번호 숨김)
             st.dataframe(
                 df, 
                 use_container_width=True,
@@ -304,7 +309,7 @@ with tab2:
 
 
 # =========================================================
-# TAB 3: 개선 결과 통계 (속도 최적화 및 로딩 순서 개선)
+# TAB 3: 개선 결과 통계
 # =========================================================
 with tab3:
     if check_password(key_prefix="tab3"):
@@ -355,5 +360,5 @@ with tab3:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            except Exception:
-                st.warning("⚠️ 엑셀 생성 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+            except Exception as e:
+                st.warning(f"⚠️ 엑셀 파일 생성 중 문제가 발생했습니다: {e}")
