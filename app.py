@@ -51,7 +51,7 @@ def load_data():
         # 1. 컬럼명의 양쪽 공백 자동 제거
         df.columns = df.columns.astype(str).str.strip()
         
-        # 2. 중복 컬럼명이 있을 경우 첫 번째 컬럼만 남기고 제거 (KeyError 방지 핵심)
+        # 2. 중복 컬럼명이 있을 경우 첫 번째 컬럼만 남기고 제거
         df = df.loc[:, ~df.columns.duplicated()]
         
         # 3. 필수 컬럼 유무 확인 및 없는 경우 기본값 세팅
@@ -64,25 +64,28 @@ def load_data():
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (안전성 강화)
+# 엑셀 보고서 생성 함수 (열 이름 '사진' 변경 및 실물 이미지 삽입)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_export = df.copy()
-        df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         
+        # 엑셀 보고서용 열 이름 변경: '사진URL' -> '사진'
+        df_export.rename(columns={"사진URL": "사진"}, inplace=True)
+        
+        df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         ws = writer.sheets['전체_접수내역']
         
-        # '사진URL' 열 위치 탐색 (리스트 기반 안전 검색)
+        # '사진' 열 위치 탐색
         col_list = list(df_export.columns)
-        if "사진URL" in col_list:
-            photo_col_idx = col_list.index("사진URL") + 1
+        if "사진" in col_list:
+            photo_col_idx = col_list.index("사진") + 1
             photo_col_letter = get_column_letter(photo_col_idx)
             ws.column_dimensions[photo_col_letter].width = 30
             
             for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2):
                 ws.row_dimensions[row_idx].height = 115
-                photo_url = str(row.get("사진URL", "")).strip()
+                photo_url = str(row.get("사진", "")).strip()
                 cell = ws.cell(row=row_idx, column=photo_col_idx)
                 
                 if photo_url and photo_url != "없음" and photo_url.startswith("http"):
@@ -98,7 +101,7 @@ def create_excel_report(df):
                             
                             cell_location = f"{photo_col_letter}{row_idx}"
                             ws.add_image(excel_img, cell_location)
-                            cell.value = ""
+                            cell.value = ""  # 이미지 삽입 후 셀 텍스트 제거
                     except Exception:
                         pass
 
@@ -261,76 +264,4 @@ with tab2:
                     st.success("조치 결과가 구글 시트에 업데이트되었습니다!")
                     st.rerun()
 
-            st.markdown("---")
-
-            # 2. 접수 내역 삭제
-            st.subheader("🗑️ 접수 내역 삭제 (강제 삭제)")
-            st.warning("⚠️ 삭제된 내역은 복구할 수 없습니다.")
-
-            del_options = [
-                f"{idx}번 | [{row.get('접수일시', '')}] {row.get('시설ID', '')} - {str(row.get('고장내용', ''))[:15]}..." 
-                for idx, row in df.iterrows()
-            ]
-            selected_del_option = st.selectbox("삭제할 접수 건 선택:", del_options, key="del_select")
-            del_idx = int(selected_del_option.split("번")[0])
-
-            if st.button("🔴 선택한 내역 삭제하기", use_container_width=True, key="del_btn"):
-                if del_idx in df.index:
-                    df_deleted = df.drop(index=del_idx).reset_index(drop=True)
-                    conn.update(data=df_deleted)
-                    st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
-                    st.rerun()
-
-
-# =========================================================
-# TAB 3: 개선 결과 통계
-# =========================================================
-with tab3:
-    if check_password(key_prefix="tab3"):
-        st.subheader("📊 시설보수 처리 현황 및 통계")
-        df = load_data()
-
-        if df.empty:
-            st.info("통계를 산출할 데이터가 없습니다.")
-        else:
-            # 📥 엑셀 다운로드 버튼 영역
-            with st.spinner("엑셀 보고서 및 현장 사진을 생성 중입니다..."):
-                excel_data = create_excel_report(df)
-            
-            file_today = datetime.now().strftime("%Y%m%d_%H%M")
-            
-            st.download_button(
-                label="📥 사진 포함 전체 엑셀 보고서 다운로드 (.xlsx)",
-                data=excel_data,
-                file_name=f"시설보수_통계보고서_{file_today}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            
-            st.markdown("---")
-
-            # 주요 KPI 지표
-            total_count = len(df)
-            completed_count = len(df[df["처리상태"] == "완료"])
-            in_progress_count = len(df[df["처리상태"] == "처리중"])
-            pending_count = len(df[df["처리상태"] == "접수완료"])
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("총 접수 건수", f"{total_count}건")
-            c2.metric("처리 완료", f"{completed_count}건")
-            c3.metric("처리 중", f"{in_progress_count}건")
-            c4.metric("미처리 접수", f"{pending_count}건")
-
-            st.markdown("---")
-
-            col_chart1, col_chart2 = st.columns(2)
-            
-            with col_chart1:
-                st.write("##### 📌 처리 상태별 현황")
-                status_counts = df["처리상태"].value_counts()
-                st.bar_chart(status_counts)
-
-            with col_chart2:
-                st.write("##### 🏷️ 고장 유형별 접수 비중")
-                type_counts = df["고장유형"].value_counts()
-                st.bar_chart(type_counts)
+            st.markdown
