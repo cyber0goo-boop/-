@@ -20,96 +20,95 @@ st.set_page_config(
     layout="wide"
 )
 
-# 필수 컬럼 정의
+# 필수 컬럼 정의 (표준화된 열 이름)
 REQUIRED_COLUMNS = [
     "접수일시", "시설ID", "요청자", "고장유형", 
     "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
 ]
 
-# Cloudinary 설정
+# Cloudinary 안전 설정 (KeyError 방지)
 if "cloudinary" in st.secrets:
-    cloudinary.config(
-        cloud_name=st.secrets["cloudinary"]["cloud_name"],
-        api_key=st.secrets["cloudinary"]["api_key"],
-        api_secret=st.secrets["cloudinary"]["api_secret"]
-    )
+    try:
+        c_secrets = st.secrets["cloudinary"]
+        cloudinary.config(
+            cloud_name=c_secrets.get("cloud_name", ""),
+            api_key=c_secrets.get("api_key", ""),
+            api_secret=c_secrets.get("api_secret", "")
+        )
+    except Exception:
+        pass
 
 # Google Sheets 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 데이터 불러오기 (KeyError 방지 자동 보정 포함)
+# 데이터 불러오기 함수 (KeyError 및 공백 보정 처리)
 def load_data():
     try:
         df = conn.read(ttl=0)
-        if df.empty:
+        if df is None or df.empty:
             return pd.DataFrame(columns=REQUIRED_COLUMNS)
         
-        # 구글 시트에 누락된 필수 열이 있다면 자동으로 empty 값으로 추가
+        # 1. 컬럼명의 양쪽 공백 자동 제거 (KeyError 방지 핵심)
+        df.columns = df.columns.astype(str).str.strip()
+        
+        # 2. 필수 컬럼 유무 확인 및 없는 경우 기본값 세팅
         for col in REQUIRED_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
                 
-        return df[REQUIRED_COLUMNS]  # 열 순서 표준화
+        # 3. 필요한 컬럼만 지정된 순서대로 추출
+        return df[REQUIRED_COLUMNS].copy()
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 파일 생성 함수 (사진 실물 삽입 기능 포함)
+# 엑셀 보고서 생성 함수 (사진 실물 삽입 및 안전 검사)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # 1. 전체 접수내역 시트 생성
         df_export = df.copy()
         df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         
         ws = writer.sheets['전체_접수내역']
         
-        # '사진URL' 열 위치(1-based) 및 컬럼 문구 구하기
-        photo_col_idx = df_export.columns.get_loc("사진URL") + 1
-        photo_col_letter = get_column_letter(photo_col_idx)
-        
-        # 사진 열 너비 조정 (210픽셀 크기 대응: 약 30)
-        ws.column_dimensions[photo_col_letter].width = 30
-        
-        # 각 행 순회하며 사진 다운로드 및 셀 삽입
-        for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2): # 1행은 헤더
-            # 셀 높이 조정 (150픽셀 크기 대응: 약 115pt)
-            ws.row_dimensions[row_idx].height = 115
+        # '사진URL' 열 위치 탐색
+        if "사진URL" in df_export.columns:
+            photo_col_idx = df_export.columns.get_loc("사진URL") + 1
+            photo_col_letter = get_column_letter(photo_col_idx)
+            ws.column_dimensions[photo_col_letter].width = 30
             
-            photo_url = str(row.get("사진URL", "")).strip()
-            cell = ws.cell(row=row_idx, column=photo_col_idx)
-            
-            if photo_url and photo_url != "없음" and photo_url.startswith("http"):
-                try:
-                    # 사진 이미지 웹에서 다운로드
-                    res = requests.get(photo_url, timeout=5)
-                    if res.status_code == 200:
-                        img_bytes = io.BytesIO(res.content)
-                        pil_img = PILImage.open(img_bytes)
-                        
-                        # 엑셀용 이미지 객체 생성 및 크기 리사이징 (210px x 150px)
-                        excel_img = OpenPyXLImage(pil_img)
-                        excel_img.width = 210
-                        excel_img.height = 150
-                        
-                        # 해당 위치 셀에 사진 등록
-                        cell_location = f"{photo_col_letter}{row_idx}"
-                        ws.add_image(excel_img, cell_location)
-                        
-                        # 셀 안의 기존 URL 텍스트는 지워서 깔끔하게 유지
-                        cell.value = ""
-                except Exception:
-                    # 이미지 로드 실패 시 기존 URL 유지
-                    pass
-        
+            for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2):
+                ws.row_dimensions[row_idx].height = 115
+                photo_url = str(row.get("사진URL", "")).strip()
+                cell = ws.cell(row=row_idx, column=photo_col_idx)
+                
+                if photo_url and photo_url != "없음" and photo_url.startswith("http"):
+                    try:
+                        res = requests.get(photo_url, timeout=5)
+                        if res.status_code == 200:
+                            img_bytes = io.BytesIO(res.content)
+                            pil_img = PILImage.open(img_bytes)
+                            
+                            excel_img = OpenPyXLImage(pil_img)
+                            excel_img.width = 210
+                            excel_img.height = 150
+                            
+                            cell_location = f"{photo_col_letter}{row_idx}"
+                            ws.add_image(excel_img, cell_location)
+                            cell.value = ""
+                    except Exception:
+                        pass
+
         # 2. 고장 유형별 통계 시트
-        type_df = df["고장유형"].value_counts().reset_index()
-        type_df.columns = ["고장유형", "접수건수"]
-        type_df.to_excel(writer, sheet_name='고장유형별_통계', index=False)
-        
+        if "고장유형" in df.columns and not df.empty:
+            type_df = df["고장유형"].value_counts().reset_index()
+            type_df.columns = ["고장유형", "접수건수"]
+            type_df.to_excel(writer, sheet_name='고장유형별_통계', index=False)
+            
         # 3. 처리 상태별 통계 시트
-        status_df = df["처리상태"].value_counts().reset_index()
-        status_df.columns = ["처리상태", "접수건수"]
-        status_df.to_excel(writer, sheet_name='처리상태별_통계', index=False)
+        if "처리상태" in df.columns and not df.empty:
+            status_df = df["처리상태"].value_counts().reset_index()
+            status_df.columns = ["처리상태", "접수건수"]
+            status_df.to_excel(writer, sheet_name='처리상태별_통계', index=False)
 
     return output.getvalue()
 
@@ -174,10 +173,13 @@ with tab1:
             st.warning("⚠️ 요청자 정보와 고장 내용을 입력해 주세요.")
         else:
             photo_url = "없음"
-            if uploaded_file is not None:
+            if uploaded_file is not None and "cloudinary" in st.secrets:
                 with st.spinner("사진을 업로드 중입니다..."):
-                    upload_result = cloudinary.uploader.upload(uploaded_file)
-                    photo_url = upload_result.get("secure_url", "없음")
+                    try:
+                        upload_result = cloudinary.uploader.upload(uploaded_file)
+                        photo_url = upload_result.get("secure_url", "없음")
+                    except Exception:
+                        photo_url = "업로드실패"
 
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             new_row = {
@@ -224,34 +226,36 @@ with tab2:
             selected_option = st.selectbox("수정할 접수 건을 선택하세요:", options, key="edit_select")
             
             selected_idx = int(selected_option.split("번")[0])
-            target_row = df.loc[selected_idx]
+            
+            if selected_idx in df.index:
+                target_row = df.loc[selected_idx]
 
-            if target_row.get("사진URL", "없음") != "없음" and pd.notna(target_row.get("사진URL")):
-                st.image(target_row["사진URL"], caption="첨부된 현장 사진", width=300)
+                if target_row.get("사진URL", "없음") not in ["없음", "업로드실패", ""] and pd.notna(target_row.get("사진URL")):
+                    st.image(target_row["사진URL"], caption="첨부된 현장 사진", width=300)
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                curr_status = target_row.get("처리상태", "접수완료")
-                status_list = ["접수완료", "처리중", "완료", "보류"]
-                status_idx = status_list.index(curr_status) if curr_status in status_list else 0
-                
-                new_status = st.selectbox(
-                    "처리 상태 변경", 
-                    status_list,
-                    index=status_idx,
-                    key="status_select"
-                )
-            with col_b:
-                action_detail = st.text_area("조치 내용", value=str(target_row.get("조치내용", "")) if pd.notna(target_row.get("조치내용")) else "", key="action_text")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    curr_status = str(target_row.get("처리상태", "접수완료"))
+                    status_list = ["접수완료", "처리중", "완료", "보류"]
+                    status_idx = status_list.index(curr_status) if curr_status in status_list else 0
+                    
+                    new_status = st.selectbox(
+                        "처리 상태 변경", 
+                        status_list,
+                        index=status_idx,
+                        key="status_select"
+                    )
+                with col_b:
+                    action_detail = st.text_area("조치 내용", value=str(target_row.get("조치내용", "")) if pd.notna(target_row.get("조치내용")) else "", key="action_text")
 
-            if st.button("💾 조치 사항 저장하기", use_container_width=True, key="save_btn"):
-                df.loc[selected_idx, "처리상태"] = new_status
-                df.loc[selected_idx, "조치내용"] = action_detail
-                df.loc[selected_idx, "조치일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if st.button("💾 조치 사항 저장하기", use_container_width=True, key="save_btn"):
+                    df.loc[selected_idx, "처리상태"] = new_status
+                    df.loc[selected_idx, "조치내용"] = action_detail
+                    df.loc[selected_idx, "조치일시"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                conn.update(data=df)
-                st.success("조치 결과가 구글 시트에 업데이트되었습니다!")
-                st.rerun()
+                    conn.update(data=df)
+                    st.success("조치 결과가 구글 시트에 업데이트되었습니다!")
+                    st.rerun()
 
             st.markdown("---")
 
@@ -267,14 +271,15 @@ with tab2:
             del_idx = int(selected_del_option.split("번")[0])
 
             if st.button("🔴 선택한 내역 삭제하기", use_container_width=True, key="del_btn"):
-                df_deleted = df.drop(index=del_idx).reset_index(drop=True)
-                conn.update(data=df_deleted)
-                st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
-                st.rerun()
+                if del_idx in df.index:
+                    df_deleted = df.drop(index=del_idx).reset_index(drop=True)
+                    conn.update(data=df_deleted)
+                    st.success(f"✅ {del_idx}번 접수 내역이 성공적으로 삭제되었습니다.")
+                    st.rerun()
 
 
 # =========================================================
-# TAB 3: 개선 결과 통계 (엑셀 이미지 실물 삽입 기능)
+# TAB 3: 개선 결과 통계
 # =========================================================
 with tab3:
     if check_password(key_prefix="tab3"):
@@ -284,7 +289,7 @@ with tab3:
         if df.empty:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
-            # --- 📥 엑셀 다운로드 버튼 영역 ---
+            # 📥 엑셀 다운로드 버튼 영역
             with st.spinner("엑셀 보고서 및 현장 사진을 생성 중입니다..."):
                 excel_data = create_excel_report(df)
             
