@@ -26,7 +26,7 @@ REQUIRED_COLUMNS = [
     "고장내용", "사진URL", "처리상태", "조치내용", "조치일시"
 ]
 
-# Cloudinary 안전 설정 (KeyError 방지)
+# Cloudinary 안전 설정
 if "cloudinary" in st.secrets:
     try:
         c_secrets = st.secrets["cloudinary"]
@@ -41,27 +41,30 @@ if "cloudinary" in st.secrets:
 # Google Sheets 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 데이터 불러오기 함수 (KeyError 및 공백 보정 처리)
+# 데이터 불러오기 함수 (중복 열 제거 및 KeyError 완벽 차단)
 def load_data():
     try:
         df = conn.read(ttl=0)
         if df is None or df.empty:
             return pd.DataFrame(columns=REQUIRED_COLUMNS)
         
-        # 1. 컬럼명의 양쪽 공백 자동 제거 (KeyError 방지 핵심)
+        # 1. 컬럼명의 양쪽 공백 자동 제거
         df.columns = df.columns.astype(str).str.strip()
         
-        # 2. 필수 컬럼 유무 확인 및 없는 경우 기본값 세팅
+        # 2. 중복 컬럼명이 있을 경우 첫 번째 컬럼만 남기고 제거 (KeyError 방지 핵심)
+        df = df.loc[:, ~df.columns.duplicated()]
+        
+        # 3. 필수 컬럼 유무 확인 및 없는 경우 기본값 세팅
         for col in REQUIRED_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
                 
-        # 3. 필요한 컬럼만 지정된 순서대로 추출
+        # 4. 필요한 컬럼만 지정된 순서대로 추출
         return df[REQUIRED_COLUMNS].copy()
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (사진 실물 삽입 및 안전 검사)
+# 엑셀 보고서 생성 함수 (안전성 강화)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -70,9 +73,10 @@ def create_excel_report(df):
         
         ws = writer.sheets['전체_접수내역']
         
-        # '사진URL' 열 위치 탐색
-        if "사진URL" in df_export.columns:
-            photo_col_idx = df_export.columns.get_loc("사진URL") + 1
+        # '사진URL' 열 위치 탐색 (리스트 기반 안전 검색)
+        col_list = list(df_export.columns)
+        if "사진URL" in col_list:
+            photo_col_idx = col_list.index("사진URL") + 1
             photo_col_letter = get_column_letter(photo_col_idx)
             ws.column_dimensions[photo_col_letter].width = 30
             
@@ -100,15 +104,15 @@ def create_excel_report(df):
 
         # 2. 고장 유형별 통계 시트
         if "고장유형" in df.columns and not df.empty:
-            type_df = df["고장유형"].value_counts().reset_index()
-            type_df.columns = ["고장유형", "접수건수"]
-            type_df.to_excel(writer, sheet_name='고장유형별_통계', index=False)
+            type_counts = df["고장유형"].value_counts().reset_index()
+            type_counts.columns = ["고장유형", "접수건수"]
+            type_counts.to_excel(writer, sheet_name='고장유형별_통계', index=False)
             
         # 3. 처리 상태별 통계 시트
         if "처리상태" in df.columns and not df.empty:
-            status_df = df["처리상태"].value_counts().reset_index()
-            status_df.columns = ["처리상태", "접수건수"]
-            status_df.to_excel(writer, sheet_name='처리상태별_통계', index=False)
+            status_counts = df["처리상태"].value_counts().reset_index()
+            status_counts.columns = ["처리상태", "접수건수"]
+            status_counts.to_excel(writer, sheet_name='처리상태별_통계', index=False)
 
     return output.getvalue()
 
