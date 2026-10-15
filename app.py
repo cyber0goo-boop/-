@@ -64,22 +64,28 @@ def load_data():
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (안정성 강화 및 실시간 생성)
+# 엑셀 보고서 생성 함수 (WebP 자동 JPEG 변환 및 완벽 안전 처리)
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_export = df.copy()
         
         # 엑셀 보고서용 열 이름 변경: '사진URL' -> '사진'
-        df_export.rename(columns={"사진URL": "사진"}, inplace=True)
-        
+        if "사진URL" in df_export.columns:
+            df_export.rename(columns={"사진URL": "사진"}, inplace=True)
+            
         df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         ws = writer.sheets['전체_접수내역']
         
-        # '사진' 열 위치 탐색
+        # '사진' 또는 '사진URL' 열 위치 탐색
         col_list = list(df_export.columns)
-        if "사진" in col_list:
-            photo_col_idx = col_list.index("사진") + 1
+        photo_col_name = "사진" if "사진" in col_list else ("사진URL" if "사진URL" in col_list else None)
+        
+        # 이미지 메모리 버퍼 보관용 (저장 완료 전 GC 방지)
+        img_buffers = []
+        
+        if photo_col_name:
+            photo_col_idx = col_list.index(photo_col_name) + 1
             photo_col_letter = get_column_letter(photo_col_idx)
             ws.column_dimensions[photo_col_letter].width = 30
             
@@ -87,17 +93,27 @@ def create_excel_report(df):
             
             for row_idx, (_, row) in enumerate(df_export.iterrows(), start=2):
                 ws.row_dimensions[row_idx].height = 115
-                photo_url = str(row.get("사진", "")).strip()
+                photo_url = str(row.get(photo_col_name, "")).strip()
                 cell = ws.cell(row=row_idx, column=photo_col_idx)
                 
-                if photo_url and photo_url not in ["없음", "업로드실패", ""] and photo_url.startswith("http"):
+                if photo_url and photo_url not in ["없음", "업로드실패", "nan", "None", ""] and photo_url.startswith("http"):
                     try:
                         res = requests.get(photo_url, timeout=3, headers=headers)
                         if res.status_code == 200:
-                            img_bytes = io.BytesIO(res.content)
-                            pil_img = PILImage.open(img_bytes)
+                            raw_img_bytes = io.BytesIO(res.content)
+                            pil_img = PILImage.open(raw_img_bytes)
                             
-                            excel_img = OpenPyXLImage(pil_img)
+                            # WebP/RGBA/P 포맷 등 모바일 특수 포맷을 표준 JPEG(RGB)로 변환
+                            jpg_buffer = io.BytesIO()
+                            if pil_img.mode != "RGB":
+                                pil_img = pil_img.convert("RGB")
+                            pil_img.save(jpg_buffer, format="JPEG")
+                            jpg_buffer.seek(0)
+                            
+                            # 엑셀 저장 시점까지 메모리 유지
+                            img_buffers.append(jpg_buffer)
+                            
+                            excel_img = OpenPyXLImage(jpg_buffer)
                             excel_img.width = 210
                             excel_img.height = 150
                             
@@ -105,6 +121,7 @@ def create_excel_report(df):
                             ws.add_image(excel_img, cell_location)
                             cell.value = ""  # 이미지 삽입 후 셀 텍스트 제거
                     except Exception:
+                        # 사진 개별 로드 오류 발생 시 해당 셀만 통과
                         pass
 
         # 2. 고장 유형별 통계 시트
@@ -129,7 +146,7 @@ def check_password(key_prefix="admin"):
     if not st.session_state["admin_logged_in"]:
         st.info("🔒 담당자 전용 기능입니다. 비밀번호를 입력해 주세요.")
         
-        # Form으로 감싸 엔터키 입력 시 즉시 제출 처리
+        # Form 구조 적용: 엔터키 입력 시 즉시 로그인
         with st.form(key=f"{key_prefix}_login_form"):
             pwd_input = st.text_input("🔑 관리자 비밀번호", type="password", key=f"{key_prefix}_pwd")
             submit_btn = st.form_submit_button("인증하기", use_container_width=True)
@@ -349,7 +366,7 @@ with tab3:
 
             # 2. 📥 엑셀 다운로드 영역
             st.write("##### 📥 보고서 다운로드")
-            try:
+            with st.spinner("엑셀 보고서 및 사진을 구성 중입니다..."):
                 excel_data = create_excel_report(df)
                 file_today = datetime.now().strftime("%Y%m%d_%H%M")
                 
@@ -360,5 +377,3 @@ with tab3:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            except Exception as e:
-                st.warning(f"⚠️ 엑셀 파일 생성 중 문제가 발생했습니다: {e}")
