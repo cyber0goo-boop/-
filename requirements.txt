@@ -1,0 +1,7 @@
+streamlit>=1.30.0
+st-gsheets-connection>=0.0.15
+pandas>=2.0.0
+plotly>=5.18.0
+cloudinary>=1.36.0
+qrcode[pil]>=7.4.2
+pillow>=10.0.0
