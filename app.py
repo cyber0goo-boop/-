@@ -41,47 +41,39 @@ if "cloudinary" in st.secrets:
 # Google Sheets 연결
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# 데이터 불러오기 함수 (중복 열 제거 및 KeyError 완벽 차단)
+# 데이터 불러오기 함수
 def load_data():
     try:
         df = conn.read(ttl=0)
         if df is None or df.empty:
             return pd.DataFrame(columns=REQUIRED_COLUMNS)
         
-        # 1. 컬럼명의 양쪽 공백 자동 제거
         df.columns = df.columns.astype(str).str.strip()
-        
-        # 2. 중복 컬럼명이 있을 경우 첫 번째 컬럼만 남기고 제거
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 3. 필수 컬럼 유무 확인 및 없는 경우 기본값 세팅
         for col in REQUIRED_COLUMNS:
             if col not in df.columns:
                 df[col] = ""
                 
-        # 4. 필요한 컬럼만 지정된 순서대로 추출
         return df[REQUIRED_COLUMNS].copy()
     except Exception:
         return pd.DataFrame(columns=REQUIRED_COLUMNS)
 
-# 엑셀 보고서 생성 함수 (WebP 자동 JPEG 변환 및 완벽 안전 처리)
+# 엑셀 보고서 생성 함수
 def create_excel_report(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_export = df.copy()
         
-        # 엑셀 보고서용 열 이름 변경: '사진URL' -> '사진'
         if "사진URL" in df_export.columns:
             df_export.rename(columns={"사진URL": "사진"}, inplace=True)
             
         df_export.to_excel(writer, sheet_name='전체_접수내역', index=False)
         ws = writer.sheets['전체_접수내역']
         
-        # '사진' 또는 '사진URL' 열 위치 탐색
         col_list = list(df_export.columns)
         photo_col_name = "사진" if "사진" in col_list else ("사진URL" if "사진URL" in col_list else None)
         
-        # 이미지 메모리 버퍼 보관용 (저장 완료 전 GC 방지)
         img_buffers = []
         
         if photo_col_name:
@@ -103,14 +95,12 @@ def create_excel_report(df):
                             raw_img_bytes = io.BytesIO(res.content)
                             pil_img = PILImage.open(raw_img_bytes)
                             
-                            # WebP/RGBA/P 포맷 등 모바일 특수 포맷을 표준 JPEG(RGB)로 변환
                             jpg_buffer = io.BytesIO()
                             if pil_img.mode != "RGB":
                                 pil_img = pil_img.convert("RGB")
                             pil_img.save(jpg_buffer, format="JPEG")
                             jpg_buffer.seek(0)
                             
-                            # 엑셀 저장 시점까지 메모리 유지
                             img_buffers.append(jpg_buffer)
                             
                             excel_img = OpenPyXLImage(jpg_buffer)
@@ -119,18 +109,15 @@ def create_excel_report(df):
                             
                             cell_location = f"{photo_col_letter}{row_idx}"
                             ws.add_image(excel_img, cell_location)
-                            cell.value = ""  # 이미지 삽입 후 셀 텍스트 제거
+                            cell.value = ""
                     except Exception:
-                        # 사진 개별 로드 오류 발생 시 해당 셀만 통과
                         pass
 
-        # 2. 고장 유형별 통계 시트
         if "고장유형" in df.columns and not df.empty:
             type_counts = df["고장유형"].value_counts().reset_index()
             type_counts.columns = ["고장유형", "접수건수"]
             type_counts.to_excel(writer, sheet_name='고장유형별_통계', index=False)
             
-        # 3. 처리 상태별 통계 시트
         if "처리상태" in df.columns and not df.empty:
             status_counts = df["처리상태"].value_counts().reset_index()
             status_counts.columns = ["처리상태", "접수건수"]
@@ -138,7 +125,7 @@ def create_excel_report(df):
 
     return output.getvalue()
 
-# 관리자 인증 (엔터키 제출 지원 Form 구조)
+# 관리자 인증 (엔터키 제출 지원)
 def check_password(key_prefix="admin"):
     if "admin_logged_in" not in st.session_state:
         st.session_state["admin_logged_in"] = False
@@ -146,7 +133,6 @@ def check_password(key_prefix="admin"):
     if not st.session_state["admin_logged_in"]:
         st.info("🔒 담당자 전용 기능입니다. 비밀번호를 입력해 주세요.")
         
-        # Form 구조 적용: 엔터키 입력 시 즉시 로그인
         with st.form(key=f"{key_prefix}_login_form"):
             pwd_input = st.text_input("🔑 관리자 비밀번호", type="password", key=f"{key_prefix}_pwd")
             submit_btn = st.form_submit_button("인증하기", use_container_width=True)
@@ -181,8 +167,30 @@ tab1, tab2, tab3 = st.tabs([
 with tab1:
     st.subheader("📍 시설물 고장/보수 요청")
 
+    # URL 파라미터 정제 로직 (/?facility_id= 잔재 완벽 제거)
+    raw_facility = ""
     query_params = st.query_params
-    default_facility = query_params.get("facility_id", "미지정_직접입력")
+    
+    if "facility_id" in query_params:
+        raw_facility = query_params["facility_id"]
+    else:
+        for k, v in query_params.items():
+            if "facility_id" in str(k) or "facility_id" in str(v):
+                raw_facility = v if "facility_id" in str(k) else k
+                break
+
+    if isinstance(raw_facility, list):
+        raw_facility = raw_facility[0] if raw_facility else ""
+
+    raw_str = str(raw_facility).strip()
+    if "facility_id=" in raw_str:
+        default_facility = raw_str.split("facility_id=")[-1]
+    else:
+        default_facility = raw_str.lstrip("/? ")
+
+    default_facility = default_facility.strip()
+    if not default_facility:
+        default_facility = "미지정_직접입력"
 
     with st.form("repair_request_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
@@ -336,7 +344,6 @@ with tab3:
         if df.empty:
             st.info("통계를 산출할 데이터가 없습니다.")
         else:
-            # 1. 통계 지표(KPI) 및 차트 즉시 출력
             total_count = len(df)
             completed_count = len(df[df["처리상태"] == "완료"])
             in_progress_count = len(df[df["처리상태"] == "처리중"])
@@ -364,7 +371,6 @@ with tab3:
 
             st.markdown("---")
 
-            # 2. 📥 엑셀 다운로드 영역
             st.write("##### 📥 보고서 다운로드")
             with st.spinner("엑셀 보고서 및 사진을 구성 중입니다..."):
                 excel_data = create_excel_report(df)
